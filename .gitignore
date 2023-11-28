@@ -2,4 +2,5 @@
 __pycache__
 /venv
 data/*.mp4
+results/*.mp4
 vox-cpk.pth.tar
