@@ -24,21 +24,27 @@ if sys.version_info[0] < 3:
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
 
     with open(config_path) as f:
-        config = yaml.load(f)
+        config = yaml.safe_load(f)
+    
+    print("helloooo")
 
     generator = OcclusionAwareGenerator(**config['model_params']['generator_params'],
                                         **config['model_params']['common_params'])
     if not cpu:
+        print("not cpu. doing the cuda generator")
         generator.cuda()
 
     kp_detector = KPDetector(**config['model_params']['kp_detector_params'],
                              **config['model_params']['common_params'])
     if not cpu:
+        print("not cpu. doing the cuda detector")
         kp_detector.cuda()
     
     if cpu:
+        print("cpu. doing the cpu torch")
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     else:
+        print("not cpu. doing the cuda torch")
         checkpoint = torch.load(checkpoint_path)
  
     generator.load_state_dict(checkpoint['generator'])
@@ -48,7 +54,9 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
         generator = DataParallelWithCallback(generator)
         kp_detector = DataParallelWithCallback(kp_detector)
 
+    print("evaluating generator")
     generator.eval()
+    print("evaluating keypoints")
     kp_detector.eval()
     
     return generator, kp_detector
@@ -102,34 +110,35 @@ def find_best_frame(source, driving, cpu=False):
             frame_num = i
     return frame_num
 
-if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument("--config", required=True, help="path to config")
-    parser.add_argument("--checkpoint", default='vox-cpk.pth.tar', help="path to checkpoint to restore")
+class DefaultOptions():
+    def __init__(self):
+        self.config = '/home/luuk/development/first-order-model/config/vox-256.yaml'
+        self.checkpoint = '/home/luuk/development/first-order-model/vox-cpk.pth.tar'
+        self.source_image = '/home/luuk/development/first-order-model/instance/upload/source.png'
+        self.driving_videos = [
+            '/home/luuk/development/first-order-model/data/food1-scaled.mp4',
+            '/home/luuk/development/first-order-model/data/food2-scaled.mp4',
+            '/home/luuk/development/first-order-model/data/food3-scaled.mp4',
+            '/home/luuk/development/first-order-model/data/food4-scaled.mp4',
+            '/home/luuk/development/first-order-model/data/food5-scaled.mp4',
+            '/home/luuk/development/first-order-model/data/food6-scaled.mp4',
+        ]
+        self.result_video = '/home/luuk/development/openFrameworks/of_v0.11.2_linux64gcc6_release/apps/myApps/faceCalibration/bin/data/result-'
+        self.relative = True
+        self.adapt_scale = True
+        self.find_best_frame = False
+        self.best_frame = None
+        self.cpu = False
 
-    parser.add_argument("--source_image", default='sup-mat/source.png', help="path to source image")
-    parser.add_argument("--driving_video", default='sup-mat/source.png', help="path to driving video")
-    parser.add_argument("--result_video", default='result.mp4', help="path to output")
- 
-    parser.add_argument("--relative", dest="relative", action="store_true", help="use relative or absolute keypoint coordinates")
-    parser.add_argument("--adapt_scale", dest="adapt_scale", action="store_true", help="adapt movement scale based on convex hull of keypoints")
-
-    parser.add_argument("--find_best_frame", dest="find_best_frame", action="store_true", 
-                        help="Generate from the frame that is the most alligned with source. (Only for faces, requires face_aligment lib)")
-
-    parser.add_argument("--best_frame", dest="best_frame", type=int, default=None,  
-                        help="Set frame to start from.")
- 
-    parser.add_argument("--cpu", dest="cpu", action="store_true", help="cpu mode.")
- 
-
-    parser.set_defaults(relative=False)
-    parser.set_defaults(adapt_scale=False)
-
-    opt = parser.parse_args()
-
+def generate(generator, kp_detector, opt=DefaultOptions(), driver_index=0):
+    print(opt)
     source_image = imageio.imread(opt.source_image)
-    reader = imageio.get_reader(opt.driving_video)
+    source_image = resize(source_image, (256, 256))[..., :3]
+    # generator, kp_detector = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
+    print("checkpoints loaded")
+    driver = opt.driving_videos[driver_index]
+    print("reading " + driver)
+    reader = imageio.get_reader(driver)
     fps = reader.get_meta_data()['fps']
     driving_video = []
     try:
@@ -138,20 +147,53 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
     reader.close()
-
-    source_image = resize(source_image, (256, 256))[..., :3]
+    print("resizing")
     driving_video = [resize(frame, (256, 256))[..., :3] for frame in driving_video]
-    generator, kp_detector = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
 
+    print("finding best frame")
     if opt.find_best_frame or opt.best_frame is not None:
+        print("succes")
         i = opt.best_frame if opt.best_frame is not None else find_best_frame(source_image, driving_video, cpu=opt.cpu)
         print ("Best frame: " + str(i))
+        print("making animation")
         driving_forward = driving_video[i:]
         driving_backward = driving_video[:(i+1)][::-1]
         predictions_forward = make_animation(source_image, driving_forward, generator, kp_detector, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
         predictions_backward = make_animation(source_image, driving_backward, generator, kp_detector, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
         predictions = predictions_backward[::-1] + predictions_forward[1:]
     else:
+        print("best frame not found. making animation")
         predictions = make_animation(source_image, driving_video, generator, kp_detector, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
-    imageio.mimsave(opt.result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+    print("got predictions.saving vid")
+    imageio.mimsave("/home/luuk/development/first-order-model/results/result-" + str(driver_index) + '.mp4', [img_as_ubyte(frame) for frame in predictions], fps=fps)
+    print("saved")
 
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--config", default="/home/luuk/development/first-order-model/config/vox-256.yaml", help="path to config")
+    parser.add_argument("--checkpoint", default='/home/luuk/development/first-order-model/vox-cpk.pth.tar', help="path to checkpoint to restore")
+
+    parser.add_argument("--source_image", default='/home/luuk/development/first-order-model/source.png', help="path to source image")
+    parser.add_argument("--driving_video", default='/home/luuk/development/first-order-model/driving.mp4', help="path to driving video")
+    parser.add_argument("--result_video", default='/home/luuk/development/first-order-model/result.mp4', help="path to output")
+ 
+    parser.add_argument("--relative", dest="relative", default=True, action="store_true", help="use relative or absolute keypoint coordinates")
+    parser.add_argument("--adapt_scale", dest="adapt_scale", default=True ,action="store_true", help="adapt movement scale based on convex hull of keypoints")
+
+    parser.add_argument("--find_best_frame", dest="find_best_frame", default=False, action="store_true", 
+                        help="Generate from the frame that is the most alligned with source. (Only for faces, requires face_aligment lib)")
+
+    parser.add_argument("--best_frame", dest="best_frame", type=int, default=None,  
+                        help="Set frame to start from.")
+ 
+    parser.add_argument("--cpu", dest="cpu", default=True, action="store_true", help="cpu mode.")
+ 
+
+    # parser.set_defaults(relative=False)
+    # parser.set_defaults(adapt_scale=False)
+
+    opt = parser.parse_args()
+
+    print("options")
+    print(opt)
+    generate(opt)
