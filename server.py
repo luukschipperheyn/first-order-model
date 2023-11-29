@@ -33,7 +33,7 @@ def upload():
 @app.route("/generate/<index>")
 def generate(index):
     generate_fake(generator, kp_detector, driver_index=int(index))
-    return send_from_directory(app.config['RESULT_VIDEOS'], filename='result-'+index+'.mp4')
+    return send_from_directory(app.config['RESULT_VIDEOS'], 'result-'+index+'.mp4')
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0")
